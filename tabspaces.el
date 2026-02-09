@@ -467,7 +467,7 @@ default tabspace after remove, unless we're already in the default tabspace, in 
                        buffer (tabspaces--current-tab-name)))))
     (bury-buffer buffer)
     ;; Delete buffer from tabspace buffer list
-    (delete buffer buffer-list)
+    (set-frame-parameter nil 'buffer-list (delete buffer buffer-list))
     ;; If specified AND we're not in default tab, add buffer to default tabspace
     (when (and tabspaces-remove-to-default (not in-default-tab))
       (tabspaces--add-to-default-tabspace buffer))))
@@ -1084,16 +1084,22 @@ If PROJECT-OR-SESSION-FILE is:
         (progn
           (load-file session-file)
           ;; Use placeholder buffer to avoid pollution
-          (cl-loop for elm in tabspaces--session-list do
-                   (switch-to-buffer "*tabspaces--placeholder*")
-                   (tabspaces-switch-or-create-workspace (cadr elm))
-                   (mapc #'find-file (car elm))
-                   (when (caddr elm) ; If window state exists
-                     (window-state-put (caddr elm) nil 'safe)))
-          ;; Clean up placeholder buffer
-          (cl-loop for elm in tabspaces--session-list do
-                   (tabspaces-switch-or-create-workspace (cadr elm))
-                   (tabspaces-remove-selected-buffer "*tabspaces--placeholder*"))
+          (let ((is-first t))
+            (cl-loop for elm in tabspaces--session-list do
+                     (switch-to-buffer "*tabspaces--placeholder*")
+                     (if (and is-first
+                              (equal (length (tab-bar-tabs)) 1)
+                              (not (member (cadr elm) (tabspaces--list-tabspaces))))
+                         (tab-rename (cadr elm))
+                       (tabspaces-switch-or-create-workspace (cadr elm)))
+                     (setq is-first nil)
+                     (mapc #'find-file (car elm))
+                     (when (caddr elm) ; If window state exists
+                       (window-state-put (caddr elm) nil 'safe))))
+          ;; Clean up placeholder buffer from all tabs
+          (dolist (tab (tabspaces--list-tabspaces))
+            (tab-bar-switch-to-tab tab)
+            (tabspaces-remove-selected-buffer "*tabspaces--placeholder*"))
           (kill-buffer "*tabspaces--placeholder*")
           (message "Restored session from %s" session-file))
       (message "No session file found at %s" session-file))))
@@ -1113,7 +1119,18 @@ Unlike the interactive restore, this function does more clean up to remove
 unnecessary tab."
   (message "Restoring tabspaces session on startup.")
   (tabspaces--create-session-file)
-  (tabspaces-restore-session))
+  (let ((tabs-before (tabspaces--list-tabspaces)))
+    (tabspaces-restore-session)
+    (let ((tabs-after (tabspaces--list-tabspaces))
+          (session-tabs (mapcar #'cadr tabspaces--session-list)))
+      (dolist (tab tabs-before)
+        (when (member tab tabs-after)
+          (let ((count-after (cl-count tab tabs-after :test #'equal))
+                (count-session (cl-count tab session-tabs :test #'equal)))
+            (when (or (not (member tab session-tabs))
+                      (> count-after count-session))
+              (tab-bar-close-tab-by-name tab)
+              (setq tabs-after (tabspaces--list-tabspaces)))))))))
 
 ;;;; Define Keymaps
 (defvar tabspaces-command-map
